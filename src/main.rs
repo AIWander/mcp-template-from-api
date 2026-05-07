@@ -1,85 +1,95 @@
-//! ${API_NAME} — graduated MCP server from a workflow-stored API pattern
+//! ${API_NAME} â€” graduated MCP server from a workflow-stored API pattern
 //!
 //! Generated from workflow:api_graduate. Single tool, statically wired
-//! to one upstream HTTP API. Reads credentials from environment at runtime.
+//! to one upstream HTTP API. Credentials read from environment at call time
+//! (skipped when CRED_ENV_VAR is empty, e.g. for public APIs).
 
 use anyhow::{Context, Result};
 use rmcp::{
-    handler::server::{tool::Parameters, ServerHandler},
+    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
     schemars::{self, JsonSchema},
     serde_json,
-    service::RequestContext,
     tool, tool_handler, tool_router,
-    ServiceExt, ErrorData as McpError, RoleServer,
+    ErrorData as McpError, ServerHandler, ServiceExt,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
-// ─── PATTERN-DERIVED CONSTANTS ────────────────────────────────────────
-// These are filled in by workflow:api_graduate at scaffold time.
+// â”€â”€â”€ PATTERN-DERIVED CONSTANTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Filled in by workflow:api_graduate at scaffold time.
 
-const API_NAME:        &str = "${API_NAME}";
+const API_NAME: &str = "${API_NAME}";
 const API_DESCRIPTION: &str = "${API_DESCRIPTION}";
-const URL_PATTERN:     &str = "${URL_PATTERN}";
-const METHOD:          &str = "${METHOD}";
-const CRED_ENV_VAR:    &str = "${CRED_ENV_VAR_NAME}";
-const CRED_HEADER:     &str = "${CRED_HEADER}";
-const CRED_PREFIX:     &str = "${CRED_PREFIX}";
+const URL_PATTERN: &str = "${URL_PATTERN}";
+const METHOD: &str = "${METHOD}";
+const CRED_ENV_VAR: &str = "${CRED_ENV_VAR_NAME}"; // empty string = no auth required
+const CRED_HEADER: &str = "${CRED_HEADER}";
+const CRED_PREFIX: &str = "${CRED_PREFIX}";
 
-// ─── INPUT SCHEMA (auto-derived from pattern placeholders + types) ───
+// â”€â”€â”€ INPUT SCHEMA (derived from URL placeholders + body template) â”€â”€â”€â”€
 // schemars generates the JSON schema; rmcp surfaces it via list_tools.
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct CallArgs {
-    // ${INPUT_FIELDS}
+pub struct CallArgs {
+    ${INPUT_FIELDS}
 }
 
-// ─── HANDLER ─────────────────────────────────────────────────────────
+// â”€â”€â”€ HANDLER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[derive(Clone)]
-struct ApiTool {
+pub struct ApiTool {
     http: reqwest::Client,
-    tool_router: rmcp::handler::server::tool::ToolRouter<ApiTool>,
+    tool_router: ToolRouter<Self>,
 }
 
-#[tool_router]
+#[tool_router(router = tool_router)]
 impl ApiTool {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             http: reqwest::Client::builder()
-                .user_agent(format!("{}/{}", API_NAME, env!("CARGO_PKG_VERSION")))
+                .user_agent(format!(
+                    "{}/{} (Mozilla/5.0)",
+                    API_NAME,
+                    env!("CARGO_PKG_VERSION")
+                ))
                 .build()
                 .expect("reqwest client"),
             tool_router: Self::tool_router(),
         }
     }
 
-    #[tool(description = API_DESCRIPTION)]
-    async fn call(
+    #[tool(name = "${API_NAME}", description = "${API_DESCRIPTION}")]
+    pub async fn call_tool(
         &self,
-        Parameters(args): Parameters<CallArgs>,
+        params: Parameters<CallArgs>,
     ) -> Result<CallToolResult, McpError> {
-        // 1. Pull credential from env at call time, not startup.
-        let cred = std::env::var(CRED_ENV_VAR).map_err(|_| {
-            McpError::invalid_request(
-                format!("Missing required env var: {}. Set it before invoking this tool.", CRED_ENV_VAR),
-                None,
-            )
-        })?;
+        let args = params.0;
 
-        // 2. Build URL by substituting placeholders from args.
+        // Build URL by substituting placeholders from args.
         let url = ${URL_BUILDER_EXPR};
 
-        // 3. Build the request.
-        let mut req = self.http.request(METHOD.parse().unwrap(), &url);
-        req = req.header(CRED_HEADER, format!("{}{}", CRED_PREFIX, cred));
+        // Build request.
+        let mut req = self.http.request(
+            METHOD.parse().unwrap_or(reqwest::Method::GET),
+            &url,
+        );
 
-        // 4. (Optional, generated only if the API has a body template)
+        // Inject credential ONLY if configured (empty CRED_ENV_VAR = public API).
+        if !CRED_ENV_VAR.is_empty() {
+            let cred = std::env::var(CRED_ENV_VAR).map_err(|_| {
+                McpError::invalid_request(
+                    format!("Missing required env var: {}", CRED_ENV_VAR),
+                    None,
+                )
+            })?;
+            req = req.header(CRED_HEADER, format!("{}{}", CRED_PREFIX, cred));
+        }
+
+        // (Optional, generated only if the API has a body template)
         // ${BODY_BUILDER}
 
-        // 5. Dispatch and pass through.
+        // Dispatch and pass through.
         let resp = req.send().await.map_err(|e| {
             McpError::internal_error(format!("HTTP request failed: {}", e), None)
         })?;
@@ -94,17 +104,17 @@ impl ApiTool {
             ));
         }
 
-        // 6. Try to parse as JSON; fall back to text.
-        let content = match serde_json::from_str::<serde_json::Value>(&body) {
-            Ok(v) => Content::text(serde_json::to_string_pretty(&v).unwrap_or(body)),
-            Err(_) => Content::text(body),
+        // Pretty-print JSON if possible; fall back to raw text.
+        let formatted = match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(v) => serde_json::to_string_pretty(&v).unwrap_or(body),
+            Err(_) => body,
         };
 
-        Ok(CallToolResult::success(vec![content]))
+        Ok(CallToolResult::success(vec![Content::text(formatted)]))
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for ApiTool {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
@@ -113,16 +123,20 @@ impl ServerHandler for ApiTool {
             server_info: Implementation {
                 name: API_NAME.to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                title: None,
+                description: Some(API_DESCRIPTION.to_string()),
+                icons: None,
+                website_url: None,
             },
             instructions: Some(format!(
-                "Standalone MCP server for {}. Requires {} env var. Generated by workflow:api_graduate.",
-                API_NAME, CRED_ENV_VAR
+                "Standalone MCP server for {}. Generated by workflow:api_graduate.",
+                API_NAME
             )),
         }
     }
 }
 
-// ─── ENTRY POINT ─────────────────────────────────────────────────────
+// â”€â”€â”€ ENTRY POINT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[tokio::main]
 async fn main() -> Result<()> {
