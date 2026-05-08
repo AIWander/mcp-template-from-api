@@ -86,8 +86,8 @@ impl ApiTool {
             req = req.header(CRED_HEADER, format!("{}{}", CRED_PREFIX, cred));
         }
 
-        // (Optional, generated only if the API has a body template)
-        // ${BODY_BUILDER}
+        // (body-builder: generated only if the API has a body template)
+        ${BODY_BUILDER}
 
         // Dispatch and pass through.
         let resp = req.send().await.map_err(|e| {
